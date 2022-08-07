@@ -159,6 +159,8 @@ static void commit_log_print_insn(processor_t *p, reg_t pc, insn_t insn)
     commit_log_print_value(log_file, xlen, std::get<0>(item));
     fprintf(log_file, " ");
     commit_log_print_value(log_file, std::get<2>(item) << 3, std::get<1>(item));
+    fprintf(log_file, " ");
+    commit_log_print_value(log_file, 8, std::get<2>(item));
   }
   fprintf(log_file, "\n");
 }

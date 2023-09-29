@@ -1,9 +1,11 @@
 fdt_subproject_deps = \
 
-fdt_hdrs = \
-	fdt.h \
+fdt_install_shared_lib = yes
+
+fdt_install_hdrs = \
 	libfdt.h \
-	libfdt_env.h \
+	fdt.h \
+	libfdt_env.h
 
 fdt_c_srcs = \
 	fdt.c \

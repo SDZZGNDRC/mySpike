@@ -1,6 +1,7 @@
 // See LICENSE for license details.
 
 #include "disasm.h"
+#include "decode_macros.h"
 #include <cassert>
 #include <string>
 #include <vector>
@@ -9,6 +10,10 @@
 #include <stdlib.h>
 // For std::reverse:
 #include <algorithm>
+
+#ifdef __GNUC__
+# pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
 
 // Indicates that the next arg (only) is optional.
 // If the result of converting the next arg to a string is ""
@@ -20,6 +25,18 @@ struct : public arg_t {
     return std::to_string((int)insn.i_imm()) + '(' + xpr_name[insn.rs1()] + ')';
   }
 } load_address;
+
+struct : public arg_t {
+  std::string to_string(insn_t insn) const {
+    return std::to_string((int)insn.rvc_lbimm()) + '(' + xpr_name[insn.rvc_rs1s()] + ')';
+  }
+} rvb_b_address;
+
+struct : public arg_t {
+  std::string to_string(insn_t insn) const {
+    return std::to_string((int)insn.rvc_lhimm()) + '(' + xpr_name[insn.rvc_rs1s()] + ')';
+  }
+} rvb_h_address;
 
 struct : public arg_t {
   std::string to_string(insn_t insn) const {
@@ -44,6 +61,52 @@ struct : public arg_t {
     return xpr_name[insn.rs1()];
   }
 } xrs1;
+
+struct : public arg_t {
+  std::string to_string(insn_t insn) const {
+    return std::to_string((uint32_t)insn.rvc_index());
+  }
+} rvcm_jt_index;
+
+struct : public arg_t {
+  std::string to_string(insn_t insn) const {
+    int rlist = insn.rvc_rlist();
+    if (rlist >= 4) {
+      switch(rlist) {
+        case 4: return "{ra}";
+        case 5: return "{ra, s0}";
+        case 15: return "{ra, s0-s11}";
+        default: return "{ra, s0-s" + std::to_string(rlist - 5)+'}';
+      }
+    } else {
+      return "unsupport rlist";
+    }
+  }
+} rvcm_pushpop_rlist;
+
+struct : public arg_t {
+  std::string to_string(insn_t insn) const {
+    return '-' + std::to_string(insn.zcmp_stack_adjustment(32));
+  }
+} rvcm_push_stack_adj_32;
+
+struct : public arg_t {
+  std::string to_string(insn_t insn) const {
+    return '-' + std::to_string(insn.zcmp_stack_adjustment(64));
+  }
+} rvcm_push_stack_adj_64;
+
+struct : public arg_t {
+  std::string to_string(insn_t insn) const {
+    return std::to_string(insn.zcmp_stack_adjustment(32));
+  }
+} rvcm_pop_stack_adj_32;
+
+struct : public arg_t {
+  std::string to_string(insn_t insn) const {
+    return std::to_string(insn.zcmp_stack_adjustment(64));
+  }
+} rvcm_pop_stack_adj_64;
 
 struct : public arg_t {
   std::string to_string(insn_t insn) const {
@@ -126,6 +189,12 @@ struct : public arg_t {
 
 struct : public arg_t {
   std::string to_string(insn_t insn) const {
+    return std::to_string(insn.v_zimm6());
+  }
+} v_zimm6;
+
+struct : public arg_t {
+  std::string to_string(insn_t insn) const {
     int32_t target = insn.sb_imm();
     std::string s = target >= 0 ? "pc + " : "pc - ";
     s += std::to_string(abs(target));
@@ -175,12 +244,24 @@ struct : public arg_t {
 
 struct : public arg_t {
   std::string to_string(insn_t insn) const {
+    return xpr_name[RVC_R1S];
+  }
+} rvc_r1s;
+
+struct : public arg_t {
+  std::string to_string(insn_t insn) const {
+    return xpr_name[RVC_R2S];
+  }
+} rvc_r2s;
+
+struct : public arg_t {
+  std::string to_string(insn_t insn) const {
     return fpr_name[insn.rvc_rs2s()];
   }
 } rvc_fp_rs2s;
 
 struct : public arg_t {
-  std::string to_string(insn_t insn) const {
+  std::string to_string(insn_t UNUSED insn) const {
     return xpr_name[X_SP];
   }
 } rvc_sp;
@@ -314,7 +395,7 @@ struct : public arg_t {
 } vm;
 
 struct : public arg_t {
-  std::string to_string(insn_t insn) const {
+  std::string to_string(insn_t UNUSED insn) const {
     return "v0";
   }
 } v0;
@@ -332,33 +413,41 @@ struct : public arg_t {
     int lmul = insn.v_lmul();
     auto vta = insn.v_vta() == 1 ? "ta" : "tu";
     auto vma = insn.v_vma() == 1 ? "ma" : "mu";
-    s << "e" << sew;
-    if(insn.v_frac_lmul()) {
-      std::string lmul_str = "";
-      switch(lmul){
-        case 3:
-          lmul_str = "f2";
-          break;
-        case 2:
-          lmul_str = "f4";
-          break;
-        case 1:
-          lmul_str = "f8";
-          break;
-        default:
-          assert(true && "unsupport fractional LMUL");
-      }
-      s << ", m" << lmul_str;
+    int newType = (insn.bits() & 0x80000000) ? insn.v_zimm10() : insn.v_zimm11();
+    // if bit 31 is set, this is vsetivli and there is a 10-bit vtype, else this is vsetvli and there is an 11-bit vtype
+    // If the provided vtype has reserved bits, display the hex version of the vtype instead
+    if ((newType >> 8) != 0) {
+      s << "0x" << std::hex << newType;
     } else {
-      s << ", m" << (1 << lmul);
+      s << "e" << sew;
+      if(insn.v_frac_lmul()) {
+        std::string lmul_str = "";
+        switch(lmul){
+          case 3:
+            lmul_str = "f2";
+            break;
+          case 2:
+            lmul_str = "f4";
+            break;
+          case 1:
+            lmul_str = "f8";
+            break;
+          default:
+            assert(true && "unsupport fractional LMUL");
+        }
+        s << ", m" << lmul_str;
+      } else {
+        s << ", m" << (1 << lmul);
+      }
+      s << ", " << vta << ", " << vma;
     }
-    s << ", " << vta << ", " << vma;
+
     return s.str();
   }
 } v_vtype;
 
 struct : public arg_t {
-  std::string to_string(insn_t insn) const {
+  std::string to_string(insn_t UNUSED insn) const {
     return "x0";
   }
 } x0;
@@ -603,6 +692,11 @@ static void NOINLINE add_vector_viu_insn(disassembler_t* d, const char* name, ui
   d->add_insn(new disasm_insn_t(name, match, mask, {&vd, &vs2, &zimm5, opt, &vm}));
 }
 
+static void NOINLINE add_vector_viu_z6_insn(disassembler_t* d, const char* name, uint32_t match, uint32_t mask)
+{
+  d->add_insn(new disasm_insn_t(name, match, mask, {&vd, &vs2, &v_zimm6, opt, &vm}));
+}
+
 static void NOINLINE add_vector_vvm_insn(disassembler_t* d, const char* name, uint32_t match, uint32_t mask)
 {
   d->add_insn(new disasm_insn_t(name, match, mask, {&vd, &vs2, &vs1, &v0}));
@@ -740,8 +834,14 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
     DEFINE_XAMO(sc_d)
   }
 
-/*   add_insn(new disasm_insn_t("j", match_jal, mask_jal | mask_rd, {&jump_target}));
-  add_insn(new disasm_insn_t("jal", match_jal | match_rd_ra, mask_jal | mask_rd, {&jump_target})); */
+  if (isa->extension_enabled(EXT_ZACAS)) {
+    DEFINE_XAMO(amocas_w)
+    DEFINE_XAMO(amocas_d)
+    DEFINE_XAMO(amocas_q)
+  }
+
+  add_insn(new disasm_insn_t("j", match_jal, mask_jal | mask_rd, {&jump_target}));
+  add_insn(new disasm_insn_t("jal", match_jal | match_rd_ra, mask_jal | mask_rd, {&jump_target}));
   add_insn(new disasm_insn_t("jal", match_jal, mask_jal, {&xrd, &jump_target}));
 
   DEFINE_B1TYPE("beqz", beq);
@@ -759,7 +859,7 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
   DEFINE_LTYPE(auipc);
 
   add_insn(new disasm_insn_t("ret", match_jalr | match_rs1_ra, mask_jalr | mask_rd | mask_rs1 | mask_imm, {}));
-/*   DEFINE_I2TYPE("jr", jalr); */
+  DEFINE_I2TYPE("jr", jalr);
   add_insn(new disasm_insn_t("jalr", match_jalr | match_rd_ra, mask_jalr | mask_rd | mask_imm, {&xrs1}));
   DEFINE_ITYPE(jalr);
 
@@ -887,6 +987,12 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
       DEFINE_R1TYPE(clzw);
       DEFINE_R1TYPE(cpopw);
     }
+  }
+
+  if (isa->extension_enabled(EXT_ZBC)) {
+    DEFINE_RTYPE(clmul);
+    DEFINE_RTYPE(clmulh);
+    DEFINE_RTYPE(clmulr);
   }
 
   if (isa->extension_enabled(EXT_ZBS)) { 
@@ -1115,14 +1221,17 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
   }
 
   if (isa->extension_enabled(EXT_ZFHMIN)) {
-    DEFINE_FLOAD(flh)
-    DEFINE_FSTORE(fsh)
     DEFINE_FR1TYPE(fcvt_h_s);
     DEFINE_FR1TYPE(fcvt_h_d);
     DEFINE_FR1TYPE(fcvt_h_q);
     DEFINE_FR1TYPE(fcvt_s_h);
     DEFINE_FR1TYPE(fcvt_d_h);
     DEFINE_FR1TYPE(fcvt_q_h);
+  }
+
+  if (isa->extension_enabled(EXT_INTERNAL_ZFH_MOVE)) {
+    DEFINE_FLOAD(flh)
+    DEFINE_FSTORE(fsh)
     DEFINE_XFTYPE(fmv_h_x);
     DEFINE_FXTYPE(fmv_x_h);
   }
@@ -1170,6 +1279,11 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
     DEFINE_FX2TYPE(fle_q);
   }
 
+  if (isa->extension_enabled(EXT_ZFBFMIN)) {
+    DEFINE_FR1TYPE(fcvt_bf16_s);
+    DEFINE_FR1TYPE(fcvt_s_bf16);
+  }
+
   // ext-h
   if (isa->extension_enabled('H')) {
     DEFINE_XLOAD_BASE(hlv_b)
@@ -1193,7 +1307,7 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
   }
 
   // ext-c
-  if (isa->extension_enabled('C')) {
+  if (isa->extension_enabled(EXT_ZCA)) {
     DISASM_INSN("c.ebreak", c_add, mask_rd | mask_rvc_rs2, {});
     add_insn(new disasm_insn_t("ret", match_c_jr | match_rd_ra, mask_c_jr | mask_rd | mask_rvc_imm, {}));
     DISASM_INSN("c.jr", c_jr, mask_rvc_imm, {&rvc_rs1});
@@ -1217,21 +1331,13 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
     DISASM_INSN("c.or", c_or, 0, {&rvc_rs1s, &rvc_rs2s});
     DISASM_INSN("c.xor", c_xor, 0, {&rvc_rs1s, &rvc_rs2s});
     DISASM_INSN("c.lwsp", c_lwsp, 0, {&xrd, &rvc_lwsp_address});
-    DISASM_INSN("c.fld", c_fld, 0, {&rvc_fp_rs2s, &rvc_ld_address});
     DISASM_INSN("c.swsp", c_swsp, 0, {&rvc_rs2, &rvc_swsp_address});
     DISASM_INSN("c.lw", c_lw, 0, {&rvc_rs2s, &rvc_lw_address});
     DISASM_INSN("c.sw", c_sw, 0, {&rvc_rs2s, &rvc_lw_address});
     DISASM_INSN("c.beqz", c_beqz, 0, {&rvc_rs1s, &rvc_branch_target});
     DISASM_INSN("c.bnez", c_bnez, 0, {&rvc_rs1s, &rvc_branch_target});
     DISASM_INSN("c.j", c_j, 0, {&rvc_jump_target});
-    DISASM_INSN("c.fldsp", c_fldsp, 0, {&frd, &rvc_ldsp_address});
-    DISASM_INSN("c.fsd", c_fsd, 0, {&rvc_fp_rs2s, &rvc_ld_address});
-    DISASM_INSN("c.fsdsp", c_fsdsp, 0, {&rvc_fp_rs2, &rvc_sdsp_address});
     if (isa->get_max_xlen() == 32) {
-      DISASM_INSN("c.flw", c_flw, 0, {&rvc_fp_rs2s, &rvc_lw_address});
-      DISASM_INSN("c.flwsp", c_flwsp, 0, {&frd, &rvc_lwsp_address});
-      DISASM_INSN("c.fsw", c_fsw, 0, {&rvc_fp_rs2s, &rvc_lw_address});
-      DISASM_INSN("c.fswsp", c_fswsp, 0, {&rvc_fp_rs2, &rvc_swsp_address});
       DISASM_INSN("c.jal", c_jal, 0, {&rvc_jump_target});
     } else {
       DISASM_INSN("c.ld", c_ld, 0, {&rvc_rs2s, &rvc_ld_address});
@@ -1240,6 +1346,59 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
       DISASM_INSN("c.sdsp", c_sdsp, 0, {&rvc_rs2, &rvc_sdsp_address});
       DISASM_INSN("c.addiw", c_addiw, 0, {&xrd, &rvc_imm});
     }
+  }
+
+  if (isa->extension_enabled(EXT_ZCD) && isa->extension_enabled('D')) {
+    DISASM_INSN("c.fld", c_fld, 0, {&rvc_fp_rs2s, &rvc_ld_address});
+    DISASM_INSN("c.fldsp", c_fldsp, 0, {&frd, &rvc_ldsp_address});
+    DISASM_INSN("c.fsd", c_fsd, 0, {&rvc_fp_rs2s, &rvc_ld_address});
+    DISASM_INSN("c.fsdsp", c_fsdsp, 0, {&rvc_fp_rs2, &rvc_sdsp_address});
+  }
+
+  if (isa->extension_enabled(EXT_ZCF) && isa->extension_enabled('F')) {
+    DISASM_INSN("c.flw", c_flw, 0, {&rvc_fp_rs2s, &rvc_lw_address});
+    DISASM_INSN("c.flwsp", c_flwsp, 0, {&frd, &rvc_lwsp_address});
+    DISASM_INSN("c.fsw", c_fsw, 0, {&rvc_fp_rs2s, &rvc_lw_address});
+    DISASM_INSN("c.fswsp", c_fswsp, 0, {&rvc_fp_rs2, &rvc_swsp_address});
+  }
+
+  if (isa->extension_enabled(EXT_ZCB)) {
+    DISASM_INSN("c.zext.b", c_zext_b, 0, {&rvc_rs1s});
+    DISASM_INSN("c.sext.b", c_sext_b, 0, {&rvc_rs1s});
+    DISASM_INSN("c.zext.h", c_zext_h, 0, {&rvc_rs1s});
+    DISASM_INSN("c.sext.h", c_sext_h, 0, {&rvc_rs1s});
+    if (isa->get_max_xlen() == 64) {
+      DISASM_INSN("c.zext.w", c_zext_w, 0, {&rvc_rs1s});
+    }
+    DISASM_INSN("c.not", c_not, 0, {&rvc_rs1s});
+    DISASM_INSN("c.mul", c_mul, 0, {&rvc_rs1s, &rvc_rs2s});
+    DISASM_INSN("c.lbu", c_lbu, 0, {&rvc_rs2s, &rvb_b_address});
+    DISASM_INSN("c.lhu", c_lhu, 0, {&rvc_rs2s, &rvb_h_address});
+    DISASM_INSN("c.lh", c_lh, 0, {&rvc_rs2s, &rvb_h_address});
+    DISASM_INSN("c.sb", c_sb, 0, {&rvc_rs2s, &rvb_b_address});
+    DISASM_INSN("c.sh", c_sh, 0, {&rvc_rs2s, &rvb_h_address});
+  }
+
+  if (isa->extension_enabled(EXT_ZCMP)) {
+    if (isa->get_max_xlen() == 32) {
+      DISASM_INSN("cm.push", cm_push, 0, {&rvcm_pushpop_rlist, &rvcm_push_stack_adj_32});
+      DISASM_INSN("cm.pop", cm_pop, 0, {&rvcm_pushpop_rlist, &rvcm_pop_stack_adj_32});
+      DISASM_INSN("cm.popret", cm_popret, 0, {&rvcm_pushpop_rlist, &rvcm_pop_stack_adj_32});
+      DISASM_INSN("cm.popretz", cm_popretz, 0, {&rvcm_pushpop_rlist, &rvcm_pop_stack_adj_32});
+    } else {
+      DISASM_INSN("cm.push", cm_push, 0, {&rvcm_pushpop_rlist, &rvcm_push_stack_adj_64});
+      DISASM_INSN("cm.pop", cm_pop, 0, {&rvcm_pushpop_rlist, &rvcm_pop_stack_adj_64});
+      DISASM_INSN("cm.popret", cm_popret, 0, {&rvcm_pushpop_rlist, &rvcm_pop_stack_adj_64});
+      DISASM_INSN("cm.popretz", cm_popretz, 0, {&rvcm_pushpop_rlist, &rvcm_pop_stack_adj_64});
+    }
+
+    DISASM_INSN("cm.mva01s", cm_mva01s, 0, {&rvc_r1s, &rvc_r2s});
+    DISASM_INSN("cm.mvsa01", cm_mvsa01, 0, {&rvc_r1s, &rvc_r2s});
+  }
+
+  if (isa->extension_enabled(EXT_ZCMT)) {
+    DISASM_INSN("cm.jt", cm_jalt, 0x380, {&rvcm_jt_index});
+    DISASM_INSN("cm.jalt", cm_jalt, 0, {&rvcm_jt_index});
   }
 
   if (isa->extension_enabled('V')) {
@@ -1279,14 +1438,12 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
                          0x10000000, 0x10005000, 0x10006000, 0x10007000};
 
       for (unsigned nf = 0; nf <= 7; ++nf) {
-        char seg_str[8] = "";
-        if (nf)
-          sprintf(seg_str, "seg%u", nf + 1);
+        const auto seg_str = nf ? "seg" + std::to_string(nf + 1) : "";
 
         for (auto item : template_insn) {
           const reg_t match_nf = nf << 29;
           char buf[128];
-          sprintf(buf, item.fmt, seg_str, 8 << elt);
+          snprintf(buf, sizeof(buf), item.fmt, seg_str.c_str(), 8 << elt);
           add_insn(new disasm_insn_t(
             buf,
             ((item.match | match_nf) & ~mask_vldst) | elt_map[elt],
@@ -1304,7 +1461,7 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
         for (auto item : template_insn2) {
           const reg_t match_nf = nf << 29;
           char buf[128];
-          sprintf(buf, item.fmt, nf + 1, 8 << elt);
+          snprintf(buf, sizeof(buf), item.fmt, nf + 1, 8 << elt);
           add_insn(new disasm_insn_t(
             buf,
             item.match | match_nf | elt_map[elt],
@@ -1665,7 +1822,7 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
       for (size_t idx = 0; idx < sizeof(amo_map) / sizeof(amo_map[0]); ++idx) {
         for (auto item : template_insn) {
           char buf[128];
-          sprintf(buf, item.fmt, amo_map[idx].first, 8 << elt);
+          snprintf(buf, sizeof(buf), item.fmt, amo_map[idx].first, 8 << elt);
           add_insn(new disasm_insn_t(buf,
                     item.match | amo_map[idx].second | elt_map[elt],
                     item.mask,
@@ -1673,6 +1830,16 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
         }
       }
     }
+  }
+
+  if (isa->extension_enabled(EXT_ZVFBFMIN)) {
+    DEFINE_VECTOR_V(vfncvtbf16_f_f_w);
+    DEFINE_VECTOR_V(vfwcvtbf16_f_f_v);
+  }
+
+  if (isa->extension_enabled(EXT_ZVFBFWMA)) {
+    DEFINE_VECTOR_VV(vfwmaccbf16_vv);
+    DEFINE_VECTOR_VF(vfwmaccbf16_vf);
   }
 
 #define DEFINE_PI3TYPE(code) add_pitype3_insn(this, #code, match_##code, mask_##code);
@@ -1917,7 +2084,7 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
     DEFINE_RTYPE(msubr32);
     DEFINE_RTYPE(ave);
     DEFINE_RTYPE(sra_u);
-    DEFINE_PI5TYPE(srai_u);
+    DEFINE_PI6TYPE(srai_u);
     DEFINE_PI3TYPE(insb);
     DEFINE_RTYPE(maddr32)
 
@@ -1997,42 +2164,8 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
       DEFINE_RTYPE(smdrs32);
       DEFINE_RTYPE(smxds32);
       DEFINE_PI5TYPE(sraiw_u);
-      DEFINE_RTYPE(pkbb32);
       DEFINE_RTYPE(pkbt32);
       DEFINE_RTYPE(pktb32);
-      DEFINE_RTYPE(pktt32);
-    }
-  }
-
-  if (isa->extension_enabled(EXT_XZBP)) {
-    DEFINE_ITYPE_SHIFT(grevi);
-    DEFINE_ITYPE_SHIFT(gorci);
-    DEFINE_RTYPE(pack);
-    DEFINE_RTYPE(packh);
-    DEFINE_RTYPE(packu);
-    DEFINE_RTYPE(grev);
-    DEFINE_RTYPE(gorc);
-    DEFINE_RTYPE(xperm4);
-    DEFINE_RTYPE(xperm8);
-    DEFINE_RTYPE(xperm16);
-    DEFINE_RTYPE(xperm32);
-  }
-
-  if (isa->extension_enabled(EXT_XZBP) ||
-      isa->extension_enabled(EXT_XZBE) ||
-      isa->extension_enabled(EXT_XZBF)) {
-    if(isa->get_max_xlen() == 64) {
-      DEFINE_RTYPE(packw);
-    }
-  }
-
-  if (isa->extension_enabled(EXT_XZBT)) {
-    DEFINE_R3TYPE(cmix);
-    DEFINE_R3TYPE(fsr);
-    DEFINE_R3TYPE(fsri);
-    if(isa->get_max_xlen() == 64) {
-      DEFINE_R3TYPE(fsriw);
-      DEFINE_R3TYPE(fsrw);
     }
   }
 
@@ -2044,6 +2177,11 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
 
   if (isa->extension_enabled(EXT_ZICBOZ)) {
     DISASM_INSN("cbo.zero", cbo_zero, 0, {&base_only_address});
+  }
+
+  if (isa->extension_enabled(EXT_ZICOND)) {
+    DEFINE_RTYPE(czero_eqz);
+    DEFINE_RTYPE(czero_nez);
   }
 
   if (isa->extension_enabled(EXT_ZKND) ||
@@ -2103,6 +2241,93 @@ void disassembler_t::add_instructions(const isa_parser_t* isa)
     DEFINE_R1TYPE(sm3p1);
   }
 
+  if (isa->extension_enabled(EXT_ZVBB)) {
+#define DEFINE_VECTOR_VIU_ZIMM6(code) \
+  add_vector_viu_z6_insn(this, #code, match_##code, mask_##code)
+#define DISASM_VECTOR_VV_VX(name) \
+  DEFINE_VECTOR_VV(name##_vv); \
+  DEFINE_VECTOR_VX(name##_vx)
+#define DISASM_VECTOR_VV_VX_VIU(name) \
+  DEFINE_VECTOR_VV(name##_vv); \
+  DEFINE_VECTOR_VX(name##_vx); \
+  DEFINE_VECTOR_VIU(name##_vx)
+#define DISASM_VECTOR_VV_VX_VIU_ZIMM6(name) \
+  DEFINE_VECTOR_VV(name##_vv); \
+  DEFINE_VECTOR_VX(name##_vx); \
+  DEFINE_VECTOR_VIU_ZIMM6(name##_vi)
+
+    DISASM_VECTOR_VV_VX(vandn);
+    DEFINE_VECTOR_V(vbrev_v);
+    DEFINE_VECTOR_V(vbrev8_v);
+    DEFINE_VECTOR_V(vrev8_v);
+    DEFINE_VECTOR_V(vclz_v);
+    DEFINE_VECTOR_V(vctz_v);
+    DEFINE_VECTOR_V(vcpop_v);
+    DISASM_VECTOR_VV_VX(vrol);
+    DISASM_VECTOR_VV_VX_VIU_ZIMM6(vror);
+    DISASM_VECTOR_VV_VX_VIU(vwsll);
+
+#undef DEFINE_VECTOR_VIU_ZIMM6
+#undef DISASM_VECTOR_VV_VX
+#undef DISASM_VECTOR_VV_VX_VIU
+#undef DISASM_VECTOR_VV_VX_VIU_ZIMM6
+    }
+
+  if (isa->extension_enabled(EXT_ZVBC)) {
+#define DISASM_VECTOR_VV_VX(name) \
+    DEFINE_VECTOR_VV(name##_vv); \
+    DEFINE_VECTOR_VX(name##_vx)
+
+    DISASM_VECTOR_VV_VX(vclmul);
+    DISASM_VECTOR_VV_VX(vclmulh);
+
+#undef DISASM_VECTOR_VV_VX
+  }
+
+  if (isa->extension_enabled(EXT_ZVKG)) {
+    // Despite its suffix, the vgmul.vv instruction
+    // is really ".v", with the form "vgmul.vv vd, vs2".
+    DEFINE_VECTOR_V(vgmul_vv);
+    DEFINE_VECTOR_VV(vghsh_vv);
+  }
+
+  if (isa->extension_enabled(EXT_ZVKNED)) {
+    // Despite their suffixes, the vaes*.{vv,vs} instructions
+    // are really ".v", with the form "<op>.{vv,vs} vd, vs2".
+#define DISASM_VECTOR_VV_VS(name) \
+    DEFINE_VECTOR_V(name##_vv); \
+    DEFINE_VECTOR_V(name##_vs)
+
+    DISASM_VECTOR_VV_VS(vaesdm);
+    DISASM_VECTOR_VV_VS(vaesdf);
+    DISASM_VECTOR_VV_VS(vaesem);
+    DISASM_VECTOR_VV_VS(vaesef);
+
+    DEFINE_VECTOR_V(vaesz_vs);
+    DEFINE_VECTOR_VIU(vaeskf1_vi);
+    DEFINE_VECTOR_VIU(vaeskf2_vi);
+#undef DISASM_VECTOR_VV_VS
+  }
+
+  if (isa->extension_enabled(EXT_ZVKNHA) ||
+      isa->extension_enabled(EXT_ZVKNHB)) {
+    DEFINE_VECTOR_VV(vsha2ms_vv);
+    DEFINE_VECTOR_VV(vsha2ch_vv);
+    DEFINE_VECTOR_VV(vsha2cl_vv);
+  }
+
+  if (isa->extension_enabled(EXT_ZVKSED)) {
+    DEFINE_VECTOR_VIU(vsm4k_vi);
+    // Despite their suffixes, the vsm4r.{vv,vs} instructions
+    // are really ".v", with the form "vsm4r.{vv,vs} vd, vs2".
+    DEFINE_VECTOR_V(vsm4r_vv);
+    DEFINE_VECTOR_V(vsm4r_vs);
+  }
+
+  if (isa->extension_enabled(EXT_ZVKSH)) {
+    DEFINE_VECTOR_VIU(vsm3c_vi);
+    DEFINE_VECTOR_VV(vsm3me_vv);
+  }
 }
 
 disassembler_t::disassembler_t(const isa_parser_t *isa)
@@ -2112,7 +2337,7 @@ disassembler_t::disassembler_t(const isa_parser_t *isa)
 
   // next-highest priority: other instructions in same base ISA
   std::string fallback_isa_string = std::string("rv") + std::to_string(isa->get_max_xlen()) +
-    "gqchv_zfh_zba_zbb_zbc_zbs_zicbom_zicboz_zkn_zkr_zks_svinval_xbitmanip";
+    "gqchv_zfh_zba_zbb_zbc_zbs_zcb_zicbom_zicboz_zicond_zkn_zkr_zks_svinval";
   isa_parser_t fallback_isa(fallback_isa_string.c_str(), DEFAULT_PRIV);
   add_instructions(&fallback_isa);
 

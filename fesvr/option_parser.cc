@@ -13,16 +13,15 @@ void option_parser_t::option(char c, const char* s, int arg, std::function<void(
 
 const char* const* option_parser_t::parse(const char* const* argv0)
 {
-  //The argv0 here is the args that passed to main function.
   assert(argv0);
-  const char* const* argv = argv0 + 1; //Get the real arg
+  const char* const* argv = argv0 + 1;
   for (const char* opt; (opt = *argv) != NULL && opt[0] == '-'; argv++)
   {
     bool found = false;
     for (auto it = opts.begin(); !found && it != opts.end(); it++)
     {
       size_t slen = it->str ? strlen(it->str) : 0;
-      bool chr_match = opt[1] != '-' && it->chr && opt[1] == it->chr; // Try to match the chr arg and strarg
+      bool chr_match = opt[1] != '-' && it->chr && opt[1] == it->chr;
       bool str_match = opt[1] == '-' && slen && strncmp(opt+2, it->str, slen) == 0;
       if (chr_match || (str_match && (opt[2+slen] == '=' || opt[2+slen] == '\0')))
       {

@@ -6,6 +6,7 @@
 // enclosed hexadecimal number, interpreted as a RISC-V
 // instruction.
 
+#include "config.h"
 #include "disasm.h"
 #include "extension.h"
 #include <iostream>
@@ -14,7 +15,7 @@
 #include <fesvr/option_parser.h>
 using namespace std;
 
-int main(int argc, char** argv)
+int main(int UNUSED argc, char** argv)
 {
   string s;
   const char* isa = DEFAULT_ISA;
